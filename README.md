@@ -1,3 +1,8 @@
+# jgw
+```
+docker build --rm --build-arg PROXY=$http_proxy --pull -t ogb .
+nvidia-docker run --rm -it ogb:latest /bin/bash
+```
 <p align="center">
   <img width="40%" src="https://snap-stanford.github.io/ogb-web/assets/img/OGB_rectangle.png" />
 </p>
@@ -22,7 +27,7 @@ OGB aims to provide graph datasets that cover important graph machine learning t
 
 **Diverse scale:** Small-scale graph datasets can be processed within a single GPU, while medium- and large-scale graphs might require multiple GPUs or clever sampling/partition techniques.
 
-**Rich domains:** Graph datasets come from diverse domains ranging from scientific ones to social/information networks, and also include heterogeneous knowledge graphs. 
+**Rich domains:** Graph datasets come from diverse domains ranging from scientific ones to social/information networks, and also include heterogeneous knowledge graphs.
 
 <p align="center">
   <img width="70%" src="https://snap-stanford.github.io/ogb-web/assets/img/dataset_overview.png" />
@@ -75,7 +80,7 @@ from torch_geometric.data import DataLoader
 
 dataset = PygGraphPropPredDataset(name = "ogbg-molhiv")
 
-split_idx = dataset.get_idx_split() 
+split_idx = dataset.get_idx_split()
 train_loader = DataLoader(dataset[split_idx["train"]], batch_size=32, shuffle=True)
 valid_loader = DataLoader(dataset[split_idx["valid"]], batch_size=32, shuffle=False)
 test_loader = DataLoader(dataset[split_idx["test"]], batch_size=32, shuffle=False)
@@ -89,8 +94,8 @@ from ogb.graphproppred import Evaluator
 
 evaluator = Evaluator(name = "ogbg-molhiv")
 # You can learn the input and output format specification of the evaluator as follows.
-# print(evaluator.expected_input_format) 
-# print(evaluator.expected_output_format) 
+# print(evaluator.expected_input_format)
+# print(evaluator.expected_output_format)
 input_dict = {"y_true": y_true, "y_pred": y_pred}
 result_dict = evaluator.eval(input_dict) # E.g., {"rocauc": 0.7321}
 ```
