@@ -1,38 +1,16 @@
 import argparse
 
 import torch
-from torch.nn import Parameter
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch_geometric.utils import negative_sampling
 
-from torch_sparse import SparseTensor
-from torch_geometric.nn.inits import glorot, zeros
+import torch_geometric.transforms as T
+from torch_geometric.nn import GCNConv, SAGEConv
 
 from ogb.linkproppred import PygLinkPropPredDataset, Evaluator
 
 from logger import Logger
-
-
-class GCNConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(GCNConv, self).__init__()
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        self.weight = Parameter(torch.Tensor(in_channels, out_channels))
-        self.root_weight = Parameter(torch.Tensor(in_channels, out_channels))
-        self.bias = Parameter(torch.Tensor(out_channels))
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        glorot(self.weight)
-        glorot(self.root_weight)
-        zeros(self.bias)
-
-    def forward(self, x, adj):
-        return adj @ x @ self.weight + self.bias
 
 
 class GCN(torch.nn.Module):
@@ -41,10 +19,11 @@ class GCN(torch.nn.Module):
         super(GCN, self).__init__()
 
         self.convs = torch.nn.ModuleList()
-        self.convs.append(GCNConv(in_channels, hidden_channels))
+        self.convs.append(GCNConv(in_channels, hidden_channels, cached=True))
         for _ in range(num_layers - 2):
-            self.convs.append(GCNConv(hidden_channels, hidden_channels))
-        self.convs.append(GCNConv(hidden_channels, out_channels))
+            self.convs.append(
+                GCNConv(hidden_channels, hidden_channels, cached=True))
+        self.convs.append(GCNConv(hidden_channels, out_channels, cached=True))
 
         self.dropout = dropout
 
@@ -52,37 +31,13 @@ class GCN(torch.nn.Module):
         for conv in self.convs:
             conv.reset_parameters()
 
-    def forward(self, x, adj):
+    def forward(self, x, adj_t):
         for conv in self.convs[:-1]:
-            x = conv(x, adj)
+            x = conv(x, adj_t)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.convs[-1](x, adj)
+        x = self.convs[-1](x, adj_t)
         return x
-
-
-class SAGEConv(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(SAGEConv, self).__init__()
-
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-
-        self.weight = Parameter(torch.Tensor(in_channels, out_channels))
-        self.root_weight = Parameter(torch.Tensor(in_channels, out_channels))
-        self.bias = Parameter(torch.Tensor(out_channels))
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        glorot(self.weight)
-        glorot(self.root_weight)
-        zeros(self.bias)
-
-    def forward(self, x, adj):
-        out = adj.matmul(x, reduce='mean') @ self.weight
-        out = out + x @ self.root_weight + self.bias
-        return out
 
 
 class SAGE(torch.nn.Module):
@@ -102,12 +57,12 @@ class SAGE(torch.nn.Module):
         for conv in self.convs:
             conv.reset_parameters()
 
-    def forward(self, x, adj):
+    def forward(self, x, adj_t):
         for conv in self.convs[:-1]:
-            x = conv(x, adj)
+            x = conv(x, adj_t)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.convs[-1](x, adj)
+        x = self.convs[-1](x, adj_t)
         return x
 
 
@@ -138,7 +93,11 @@ class LinkPredictor(torch.nn.Module):
         return torch.sigmoid(x)
 
 
-def train(model, predictor, x, adj, split_edge, optimizer, batch_size):
+def train(model, predictor, x, adj_t, split_edge, optimizer, batch_size):
+
+    row, col, _ = adj_t.coo()
+    edge_index = torch.stack([col, row], dim=0)
+
     model.train()
     predictor.train()
 
@@ -147,24 +106,28 @@ def train(model, predictor, x, adj, split_edge, optimizer, batch_size):
     total_loss = total_examples = 0
     for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
                            shuffle=True):
-
         optimizer.zero_grad()
 
-        h = model(x, adj)
+        h = model(x, adj_t)
 
         edge = pos_train_edge[perm].t()
+
         pos_out = predictor(h[edge[0]], h[edge[1]])
         pos_loss = -torch.log(pos_out + 1e-15).mean()
 
-        # Just do some trivial random sampling.
-        edge = torch.randint(0, x.size(0), edge.size(), dtype=torch.long,
-                             device=x.device)
+        edge = negative_sampling(edge_index, num_nodes=x.size(0),
+                                 num_neg_samples=perm.size(0), method='dense')
 
         neg_out = predictor(h[edge[0]], h[edge[1]])
         neg_loss = -torch.log(1 - neg_out + 1e-15).mean()
 
         loss = pos_loss + neg_loss
         loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(x, 1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
+
         optimizer.step()
 
         num_examples = pos_out.size(0)
@@ -175,12 +138,13 @@ def train(model, predictor, x, adj, split_edge, optimizer, batch_size):
 
 
 @torch.no_grad()
-def test(model, predictor, x, adj, split_edge, evaluator, batch_size):
+def test(model, predictor, x, adj_t, split_edge, evaluator, batch_size):
     model.eval()
+    predictor.eval()
 
-    h = model(x, adj)
+    h = model(x, adj_t)
 
-    pos_train_edge = split_edge['train']['edge'].to(x.device)
+    pos_train_edge = split_edge['eval_train']['edge'].to(x.device)
     pos_valid_edge = split_edge['valid']['edge'].to(x.device)
     neg_valid_edge = split_edge['valid']['edge_neg'].to(x.device)
     pos_test_edge = split_edge['test']['edge'].to(x.device)
@@ -217,7 +181,7 @@ def test(model, predictor, x, adj, split_edge, evaluator, batch_size):
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
 
     results = {}
-    for K in [10, 50, 100]:
+    for K in [10, 20, 30]:
         evaluator.K = K
         train_hits = evaluator.eval({
             'y_pred_pos': pos_train_pred,
@@ -238,18 +202,17 @@ def test(model, predictor, x, adj, split_edge, evaluator, batch_size):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='OGBL-PPA (Full-Batch)')
+    parser = argparse.ArgumentParser(description='OGBL-DDI (GNN)')
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--log_steps', type=int, default=1)
-    parser.add_argument('--use_node_embedding', action='store_true')
     parser.add_argument('--use_sage', action='store_true')
-    parser.add_argument('--num_layers', type=int, default=3)
+    parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--hidden_channels', type=int, default=256)
-    parser.add_argument('--dropout', type=float, default=0.0)
+    parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
-    parser.add_argument('--lr', type=float, default=0.01)
-    parser.add_argument('--epochs', type=int, default=20)
-    parser.add_argument('--eval_steps', type=int, default=1)
+    parser.add_argument('--lr', type=float, default=0.005)
+    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--eval_steps', type=int, default=5)
     parser.add_argument('--runs', type=int, default=10)
     args = parser.parse_args()
     print(args)
@@ -257,57 +220,53 @@ def main():
     device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
 
-    dataset = PygLinkPropPredDataset(name='ogbl-ppa')
+    dataset = PygLinkPropPredDataset(name='ogbl-ddi',
+                                     transform=T.ToSparseTensor())
     data = dataset[0]
+    adj_t = data.adj_t.to(device)
+
     split_edge = dataset.get_edge_split()
 
-    if args.use_node_embedding:
-        x = data.x.to(torch.float)
-        x = torch.cat([x, torch.load('embedding.pt')], dim=-1)
-        x = x.to(device)
-    else:
-        x = data.x.to(torch.float).to(device)
-
-    edge_index = data.edge_index.to(device)
-    adj = SparseTensor(row=edge_index[0], col=edge_index[1])
+    # We randomly pick some training samples that we want to evaluate on:
+    torch.manual_seed(12345)
+    idx = torch.randperm(split_edge['train']['edge'].size(0))
+    idx = idx[:split_edge['valid']['edge'].size(0)]
+    split_edge['eval_train'] = {'edge': split_edge['train']['edge'][idx]}
 
     if args.use_sage:
-        model = SAGE(x.size(-1), args.hidden_channels, args.hidden_channels,
-                     args.num_layers, args.dropout).to(device)
+        model = SAGE(args.hidden_channels, args.hidden_channels,
+                     args.hidden_channels, args.num_layers,
+                     args.dropout).to(device)
     else:
-        model = GCN(x.size(-1), args.hidden_channels, args.hidden_channels,
-                    args.num_layers, args.dropout).to(device)
+        model = GCN(args.hidden_channels, args.hidden_channels,
+                    args.hidden_channels, args.num_layers,
+                    args.dropout).to(device)
 
-        # Pre-compute GCN normalization.
-        adj = adj.set_diag()
-        deg = adj.sum(dim=1).to(torch.float)
-        deg_inv_sqrt = deg.pow(-0.5)
-        deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
-        adj = deg_inv_sqrt.view(-1, 1) * adj * deg_inv_sqrt.view(1, -1)
-
+    emb = torch.nn.Embedding(data.num_nodes, args.hidden_channels).to(device)
     predictor = LinkPredictor(args.hidden_channels, args.hidden_channels, 1,
                               args.num_layers, args.dropout).to(device)
 
-    evaluator = Evaluator(name='ogbl-ppa')
+    evaluator = Evaluator(name='ogbl-ddi')
     loggers = {
         'Hits@10': Logger(args.runs, args),
-        'Hits@50': Logger(args.runs, args),
-        'Hits@100': Logger(args.runs, args),
+        'Hits@20': Logger(args.runs, args),
+        'Hits@30': Logger(args.runs, args),
     }
 
     for run in range(args.runs):
+        torch.nn.init.xavier_uniform_(emb.weight)
         model.reset_parameters()
         predictor.reset_parameters()
         optimizer = torch.optim.Adam(
-            list(model.parameters()) + list(predictor.parameters()),
-            lr=args.lr)
+            list(model.parameters()) + list(emb.parameters()) +
+            list(predictor.parameters()), lr=args.lr)
 
         for epoch in range(1, 1 + args.epochs):
-            loss = train(model, predictor, x, adj, split_edge, optimizer,
-                         args.batch_size)
+            loss = train(model, predictor, emb.weight, adj_t, split_edge,
+                         optimizer, args.batch_size)
 
             if epoch % args.eval_steps == 0:
-                results = test(model, predictor, x, adj, split_edge,
+                results = test(model, predictor, emb.weight, adj_t, split_edge,
                                evaluator, args.batch_size)
                 for key, result in results.items():
                     loggers[key].add_result(run, result)
@@ -322,6 +281,7 @@ def main():
                               f'Train: {100 * train_hits:.2f}%, '
                               f'Valid: {100 * valid_hits:.2f}%, '
                               f'Test: {100 * test_hits:.2f}%')
+                    print('---')
 
         for key in loggers.keys():
             print(key)

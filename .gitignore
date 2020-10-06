@@ -7,3 +7,14 @@ dataset/
 *.vscode
 *.DS_Store
 *.pt
+*.so
+*trial*
+*.ipynb
+*.sh
+*analyze*
+*random.py
+*RELEASE_*
+*.csv.gz
+*.zip
+*submission_
+*.npz
