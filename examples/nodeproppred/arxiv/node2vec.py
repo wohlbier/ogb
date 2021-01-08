@@ -27,7 +27,8 @@ def main():
     device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
 
-    dataset = PygNodePropPredDataset(name='ogbn-arxiv')
+    dataset = PygNodePropPredDataset(name='ogbn-arxiv',
+                                     root='/srv/scratch/ogb/datasets/nodeproppred')
     data = dataset[0]
     data.edge_index = to_undirected(data.edge_index, data.num_nodes)
 
