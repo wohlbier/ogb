@@ -15,15 +15,15 @@ class PygNodePropPredDataset(InMemoryDataset):
             - root (str): root directory to store the dataset folder
             - transform, pre_transform (optional): transform/pre-transform graph objects
 
-            - meta_dict: dictionary that stores all the meta-information about data. Default is None, 
+            - meta_dict: dictionary that stores all the meta-information about data. Default is None,
                     but when something is passed, it uses its information. Useful for debugging for external contributers.
-        ''' 
+        '''
 
         self.name = name ## original name, e.g., ogbn-proteins
 
         if meta_dict is None:
-            self.dir_name = '_'.join(name.split('-')) 
-            
+            self.dir_name = '_'.join(name.split('-'))
+
             # check if previously-downloaded folder exists.
             # If so, use that one.
             if osp.exists(osp.join(root, self.dir_name + '_pyg')):
@@ -31,7 +31,7 @@ class PygNodePropPredDataset(InMemoryDataset):
 
             self.original_root = root
             self.root = osp.join(root, self.dir_name)
-            
+
             master = pd.read_csv(os.path.join(os.path.dirname(__file__), 'master.csv'), index_col = 0)
             if not self.name in master:
                 error_mssg = 'Invalid dataset name {}.\n'.format(self.name)
@@ -39,7 +39,7 @@ class PygNodePropPredDataset(InMemoryDataset):
                 error_mssg += '\n'.join(master.keys())
                 raise ValueError(error_mssg)
             self.meta_info = master[self.name]
-            
+
         else:
             self.dir_name = meta_dict['dir_path']
             self.original_root = ''
@@ -49,7 +49,7 @@ class PygNodePropPredDataset(InMemoryDataset):
         # check version
         # First check whether the dataset has been already downloaded or not.
         # If so, check whether the dataset version is the newest or not.
-        # If the dataset is not the newest version, notify this to the user. 
+        # If the dataset is not the newest version, notify this to the user.
         if osp.isdir(self.root) and (not osp.exists(osp.join(self.root, 'RELEASE_v' + str(self.meta_info['version']) + '.txt'))):
             print(self.name + ' has been updated.')
             if input('Will you update the dataset now? (y/N)\n').lower() == 'y':
@@ -124,10 +124,15 @@ class PygNodePropPredDataset(InMemoryDataset):
         url =  self.meta_info['url']
         if decide_download(url):
             path = download_url(url, self.original_root)
+
+            # hack to keep zip file
+            shutil.copyfile(path,path+'.tmp')
             extract_zip(path, self.original_root)
             os.unlink(path)
             shutil.rmtree(self.root)
             shutil.move(osp.join(self.original_root, self.download_name), self.root)
+            # finish hack
+            shutil.move(path+'.tmp',path)
         else:
             print('Stop downloading.')
             shutil.rmtree(self.root)
@@ -196,11 +201,10 @@ class PygNodePropPredDataset(InMemoryDataset):
 
     def __repr__(self):
         return '{}()'.format(self.__class__.__name__)
-        
+
 
 if __name__ == '__main__':
     pyg_dataset = PygNodePropPredDataset(name = 'ogbn-mag')
     print(pyg_dataset[0])
     split_index = pyg_dataset.get_idx_split()
     # print(split_index)
-    
