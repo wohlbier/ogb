@@ -1,3 +1,46 @@
+```
+conda create -n ogb_env
+conda activate ogb_env
+
+conda install \
+      numpy \
+      pandas \
+      python \
+      pytorch \
+      scikit-learn \
+      urllib3
+
+conda install -c conda-forge \
+      outdated
+
+git clone https://github.com/rusty1s/pytorch_scatter.git
+git clone https://github.com/rusty1s/pytorch_sparse.git
+git clone https://github.com/rusty1s/pytorch_cluster.git
+git clone https://github.com/rusty1s/pytorch_spline_conv.git
+git clone https://github.com/rusty1s/pytorch_geometric.git
+
+module load gcc-10.2.0-gcc-8.3.1-tt7scqf
+cd pytorch_scatter
+python setup.py build -j 40
+python setup.py install
+cd ../pytorch_sparse
+python setup.py build -j 40
+python setup.py install
+cd ../pytorch_cluster
+python setup.py build -j 40
+python setup.py install
+cd ../pytorch_spline_conv
+python setup.py build -j 40
+python setup.py install
+cd ../pytorch_geometric
+python setup.py build -j 40
+python setup.py install
+
+git clone https://github.com/snap-stanford/ogb
+cd ogb
+pip install -e .
+```
+
 # jgw
 ```
 docker build --rm --build-arg PROXY=$http_proxy --pull -t ogb .
