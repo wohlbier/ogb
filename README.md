@@ -41,11 +41,6 @@ cd ogb
 pip install -e .
 ```
 
-# jgw
-```
-docker build --rm --build-arg PROXY=$http_proxy --pull -t ogb .
-nvidia-docker run --rm -it ogb:latest /bin/bash
-```
 <p align='center'>
   <img width='40%' src='https://snap-stanford.github.io/ogb-web/assets/img/OGB_rectangle.png' />
 </p>
